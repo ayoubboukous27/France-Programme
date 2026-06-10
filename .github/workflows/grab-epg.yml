@@ -2,12 +2,11 @@ name: Grab EPG - programme-television.org
 
 on:
   schedule:
-    # كل يوم الساعة 04:00 UTC (بعد منتصف الليل بتوقيت باريس)
     - cron: '0 4 * * *'
-  workflow_dispatch:  # تشغيل يدوي عند الحاجة
+  workflow_dispatch:
 
 permissions:
-  contents: write  # مطلوب لـ git push
+  contents: write
 
 jobs:
   grab-epg:
@@ -22,64 +21,89 @@ jobs:
 
       # ──────────────────────────────────────────
       # 2. إعداد مجلدات WebGrab+Plus
-      #    /config  → ملفات الإعداد
-      #    /data    → output (guide.xml)
-      #    linuxserver يبحث عن siteini.user داخل /config
       # ──────────────────────────────────────────
       - name: Prepare WebGrab+Plus directories
         run: |
           mkdir -p wg-config/siteini.user/sites/programme-television.org
           mkdir -p wg-data
 
-          # ملف config الرئيسي — يجب أن يكون WebGrab++.config.xml
           cp config/programme-television_org_channels.xml \
              wg-config/WebGrab++.config.xml
 
-          # ملف الـ ini داخل siteini.user
           cp config/programme-television_org.ini \
              wg-config/siteini.user/sites/programme-television.org/programme-television_org.ini
 
       # ──────────────────────────────────────────
-      # 3. Pull الـ image أولاً (لتسجيل وقت الـ pull منفصلاً)
+      # 3. اختبار الاتصال بالإنترنت من الـ runner
+      # ──────────────────────────────────────────
+      - name: Verify internet connectivity
+        run: |
+          curl -s --max-time 10 https://www.google.com -o /dev/null && echo "✅ Internet OK" || echo "❌ No Internet"
+          nslookup programme-television.org || true
+
+      # ──────────────────────────────────────────
+      # 4. Pull الـ image
       # ──────────────────────────────────────────
       - name: Pull WebGrab+Plus image
         run: docker pull lscr.io/linuxserver/webgrabplus:latest
 
       # ──────────────────────────────────────────
-      # 4. تشغيل WebGrab+Plus
-      #    - نشغّل الـ container كـ daemon
-      #    - ننتظر حتى ينتهي الـ grabbing
-      #    - نوقفه ونحذفه
+      # 5. تشغيل WebGrab+Plus
+      #    - نبني Dockerfile مؤقت يثبّت ping أولاً
+      #      لأن GitHub Actions يمنع ICMP/ping الأصلي
+      #    - نستخدم --dns صريح لضمان DNS داخل الـ container
       # ──────────────────────────────────────────
+      - name: Build patched WebGrab+Plus image
+        run: |
+          cat > Dockerfile.wg << 'EOF'
+          FROM lscr.io/linuxserver/webgrabplus:latest
+          USER root
+          RUN apk add --no-cache iputils || \
+              apt-get update -qq && apt-get install -y -qq iputils-ping || true
+          EOF
+          docker build -f Dockerfile.wg -t webgrabplus-patched . || \
+            echo "Patch failed, using original image"
+
       - name: Run WebGrab+Plus
         run: |
-          # تشغيل الـ container
+          # نحاول أولاً بالصورة المعدّلة، ثم الأصلية كـ fallback
+          IMAGE="webgrabplus-patched"
+          docker image inspect "$IMAGE" > /dev/null 2>&1 || IMAGE="lscr.io/linuxserver/webgrabplus:latest"
+
+          echo "🐳 Using image: $IMAGE"
+
           docker run -d \
             --name=webgrabplus \
-            --network host \
-            -e PUID=1000 \
-            -e PGID=1000 \
+            --dns 8.8.8.8 \
+            --dns 1.1.1.1 \
+            -e PUID=0 \
+            -e PGID=0 \
             -e TZ=Europe/Paris \
             -v "${{ github.workspace }}/wg-config:/config" \
             -v "${{ github.workspace }}/wg-data:/data" \
-            lscr.io/linuxserver/webgrabplus:latest
+            "$IMAGE"
 
-          echo "⏳ Waiting for WebGrab+Plus to initialize..."
-          sleep 30
+          echo "⏳ Waiting for container to initialize (45s)..."
+          sleep 45
 
-          # تشغيل WebGrab++ يدوياً داخل الـ container
+          # تحقق أن الـ container لا يزال يعمل
+          if ! docker ps --filter "name=webgrabplus" --filter "status=running" | grep -q webgrabplus; then
+            echo "⚠️ Container stopped early — checking logs..."
+            docker logs webgrabplus
+            exit 1
+          fi
+
           echo "🚀 Starting EPG grab..."
           docker exec webgrabplus \
             /app/dotnet/dotnet /app/wg++/bin.net/WebGrab+Plus.dll /config
 
           echo "✅ Grab completed"
 
-          # إيقاف وحذف الـ container
           docker stop webgrabplus
           docker rm webgrabplus
 
       # ──────────────────────────────────────────
-      # 5. التحقق من النتيجة وعرض اللوغ
+      # 6. التحقق من النتيجة وعرض اللوغ
       # ──────────────────────────────────────────
       - name: Check output
         run: |
@@ -89,10 +113,9 @@ jobs:
           echo "📂 Contents of wg-config:"
           ls -la wg-config/
 
-          # عرض آخر 30 سطر من اللوغ (مفيد لـ debugging)
           if [ -f "wg-config/WebGrab++.log.txt" ]; then
-            echo "📋 Last 30 lines of WebGrab++.log.txt:"
-            tail -30 wg-config/WebGrab++.log.txt
+            echo "📋 Last 50 lines of WebGrab++.log.txt:"
+            tail -50 wg-config/WebGrab++.log.txt
           fi
 
           if [ -f "wg-data/guide.xml" ]; then
@@ -105,7 +128,7 @@ jobs:
           fi
 
       # ──────────────────────────────────────────
-      # 6. ضغط الملف
+      # 7. ضغط الملف
       # ──────────────────────────────────────────
       - name: Compress EPG output
         run: |
@@ -113,7 +136,7 @@ jobs:
           echo "📦 Compressed: $(du -sh wg-data/guide.xml.gz | cut -f1)"
 
       # ──────────────────────────────────────────
-      # 7. رفع EPG كـ Artifact قابل للتحميل
+      # 8. رفع EPG كـ Artifact
       # ──────────────────────────────────────────
       - name: Upload EPG as artifact
         uses: actions/upload-artifact@v4
@@ -125,8 +148,7 @@ jobs:
           retention-days: 7
 
       # ──────────────────────────────────────────
-      # 8. Commit & Push الـ EPG إلى المستودع
-      #    (حتى تقدر تستخدم raw URL مباشرة في IPTV)
+      # 9. Commit & Push الـ EPG إلى المستودع
       # ──────────────────────────────────────────
       - name: Commit and push EPG
         run: |
@@ -145,4 +167,18 @@ jobs:
             git commit -m "chore: update EPG [$(date -u '+%Y-%m-%d %H:%M UTC')]"
             git push
           fi
-          
+
+      # ──────────────────────────────────────────
+      # 10. عرض الـ logs دائماً حتى عند الفشل
+      # ──────────────────────────────────────────
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Docker logs ==="
+          docker logs webgrabplus 2>/dev/null || true
+
+          echo "=== WebGrab++ log ==="
+          cat wg-config/WebGrab++.log.txt 2>/dev/null || true
+
+          echo "=== wg-data contents ==="
+          ls -la wg-data/ 2>/dev/null || true
