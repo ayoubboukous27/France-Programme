@@ -2,7 +2,7 @@ name: EPG Collector CI
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # تشغيل يومي الساعة 02:00 صباحاً
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
             -output ..\..\guide.xml
 
       - name: Upload Output
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: epg_xml
           path: guide.xml
