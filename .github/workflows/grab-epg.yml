@@ -1,0 +1,103 @@
+name: Grab EPG - programme-television.org
+
+on:
+  schedule:
+    # كل يوم الساعة 04:00 UTC (بعد منتصف الليل بتوقيت باريس)
+    - cron: '0 4 * * *'
+  workflow_dispatch:  # تشغيل يدوي عند الحاجة
+
+permissions:
+  contents: write  # مطلوب لـ git push
+
+jobs:
+  grab-epg:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ──────────────────────────────────────────
+      # 1. Checkout المستودع
+      # ──────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ──────────────────────────────────────────
+      # 2. إعداد مجلد WebGrab+Plus config
+      # ──────────────────────────────────────────
+      - name: Prepare WebGrab+Plus config directory
+        run: |
+          mkdir -p wg-config
+          # نسخ ملف القنوات إلى مجلد الـ config
+          cp config/programme-television_org_channels.xml wg-config/WebGrab++.config.xml
+          # إنشاء SiteIni folder وضع ملف الـ ini داخله
+          mkdir -p wg-config/siteini.pack/programme-television.org
+          cp config/programme-television_org.ini wg-config/siteini.pack/programme-television.org/programme-television_org.ini
+
+      # ──────────────────────────────────────────
+      # 3. تشغيل WebGrab+Plus عبر Docker
+      # ──────────────────────────────────────────
+      - name: Run WebGrab+Plus
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/wg-config:/home/wg/wg-config" \
+            -v "${{ github.workspace }}/output:/home/wg/wg-output" \
+            ghcr.io/webgrabplus/webgrabplus:latest \
+            /home/wg/wg-config
+
+      # ──────────────────────────────────────────
+      # 4. التحقق من النتيجة
+      # ──────────────────────────────────────────
+      - name: Check output
+        run: |
+          if [ -f "output/guide.xml" ]; then
+            echo "✅ EPG generated successfully"
+            wc -l output/guide.xml
+            head -5 output/guide.xml
+          else
+            echo "❌ guide.xml not found!"
+            ls -la output/ || echo "output folder is empty"
+            exit 1
+          fi
+
+      # ──────────────────────────────────────────
+      # 5. ضغط الملف (اختياري - يوفر مساحة)
+      # ──────────────────────────────────────────
+      - name: Compress EPG output
+        run: |
+          gzip -k output/guide.xml
+          echo "📦 Compressed: $(du -sh output/guide.xml.gz | cut -f1)"
+
+      # ──────────────────────────────────────────
+      # 6. رفع EPG كـ Artifact قابل للتحميل
+      # ──────────────────────────────────────────
+      - name: Upload EPG as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: epg-xmltv-${{ github.run_number }}
+          path: |
+            output/guide.xml
+            output/guide.xml.gz
+          retention-days: 7
+
+      # ──────────────────────────────────────────
+      # 7. Commit & Push الـ EPG إلى المستودع
+      #    (حتى تقدر تستخدم raw URL مباشرة في IPTV)
+      # ──────────────────────────────────────────
+      - name: Commit and push EPG
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # نسخ الملف للمسار النهائي في المستودع
+          mkdir -p epg
+          cp output/guide.xml     epg/guide.xml
+          cp output/guide.xml.gz  epg/guide.xml.gz
+          
+          git add epg/guide.xml epg/guide.xml.gz
+          
+          # فقط إذا كان هناك تغيير فعلي
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update EPG [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git push
+          fi
