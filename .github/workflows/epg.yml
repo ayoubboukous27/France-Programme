@@ -1,0 +1,34 @@
+name: Génération EPG
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install configparser
+
+      - name: Générer EPG XML
+        run: python generate_epg.py
+
+      - name: Commit et push EPG
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add epg.xml
+          git commit -m "Mise à jour automatique EPG"
+          git push
