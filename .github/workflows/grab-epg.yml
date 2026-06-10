@@ -2,58 +2,42 @@ name: Grab EPG - programme-television.org
 
 on:
   schedule:
-    # كل يوم الساعة 04:00 UTC (بعد منتصف الليل بتوقيت باريس)
-    - cron: '0 4 * * *'
-  workflow_dispatch:  # تشغيل يدوي عند الحاجة
+    - cron: '0 4 * * *'  # كل يوم الساعة 04:00 UTC
+  workflow_dispatch:  # تشغيل يدوي
 
 permissions:
-  contents: write  # مطلوب لـ git push
+  contents: write
 
 jobs:
   grab-epg:
     runs-on: ubuntu-latest
 
     steps:
-      # ──────────────────────────────────────────
-      # 1. Checkout المستودع
-      # ──────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ──────────────────────────────────────────
-      # 2. إعداد مجلدات WebGrab+Plus
-      #    /config  → ملفات الإعداد
-      #    /data    → output (guide.xml)
-      #    linuxserver يبحث عن siteini.user داخل /config
-      # ──────────────────────────────────────────
       - name: Prepare WebGrab+Plus directories
         run: |
           mkdir -p wg-config/siteini.user/sites/programme-television.org
           mkdir -p wg-data
+          cp config/programme-television_org_channels.xml wg-config/WebGrab++.config.xml
+          cp config/programme-television_org.ini wg-config/siteini.user/sites/programme-television.org/
 
-          # ملف config الرئيسي — يجب أن يكون WebGrab++.config.xml
-          cp config/programme-television_org_channels.xml \
-             wg-config/WebGrab++.config.xml
-
-          # ملف الـ ini داخل siteini.user
-          cp config/programme-television_org.ini \
-             wg-config/siteini.user/sites/programme-television.org/programme-television_org.ini
-
-      # ──────────────────────────────────────────
-      # 3. Pull الـ image أولاً (لتسجيل وقت الـ pull منفصلاً)
-      # ──────────────────────────────────────────
       - name: Pull WebGrab+Plus image
         run: docker pull lscr.io/linuxserver/webgrabplus:latest
 
-      # ──────────────────────────────────────────
-      # 4. تشغيل WebGrab+Plus
-      #    - نشغّل الـ container كـ daemon
-      #    - ننتظر حتى ينتهي الـ grabbing
-      #    - نوقفه ونحذفه
-      # ──────────────────────────────────────────
+      - name: Test Internet connectivity
+        run: |
+          echo "🔍 Checking Internet..."
+          if ping -c 2 google.com; then
+            echo "✅ Internet is available"
+          else
+            echo "❌ No Internet detected, aborting workflow"
+            exit 1
+          fi
+
       - name: Run WebGrab+Plus
         run: |
-          # تشغيل الـ container
           docker run -d \
             --name=webgrabplus \
             --network host \
@@ -67,54 +51,29 @@ jobs:
           echo "⏳ Waiting for WebGrab+Plus to initialize..."
           sleep 30
 
-          # تشغيل WebGrab++ يدوياً داخل الـ container
           echo "🚀 Starting EPG grab..."
-          docker exec webgrabplus \
-            /app/dotnet/dotnet /app/wg++/bin.net/WebGrab+Plus.dll /config
+          docker exec webgrabplus /app/dotnet/dotnet /app/wg++/bin.net/WebGrab+Plus.dll /config
 
           echo "✅ Grab completed"
 
-          # إيقاف وحذف الـ container
           docker stop webgrabplus
           docker rm webgrabplus
 
-      # ──────────────────────────────────────────
-      # 5. التحقق من النتيجة وعرض اللوغ
-      # ──────────────────────────────────────────
       - name: Check output
         run: |
           echo "📂 Contents of wg-data:"
           ls -la wg-data/ || echo "(empty)"
-
-          echo "📂 Contents of wg-config:"
-          ls -la wg-config/
-
-          # عرض آخر 30 سطر من اللوغ (مفيد لـ debugging)
-          if [ -f "wg-config/WebGrab++.log.txt" ]; then
-            echo "📋 Last 30 lines of WebGrab++.log.txt:"
-            tail -30 wg-config/WebGrab++.log.txt
-          fi
-
           if [ -f "wg-data/guide.xml" ]; then
             echo "✅ EPG generated successfully"
-            wc -l wg-data/guide.xml
-            head -5 wg-data/guide.xml
+            tail -30 wg-config/WebGrab++.log.txt
           else
             echo "❌ guide.xml not found!"
             exit 1
           fi
 
-      # ──────────────────────────────────────────
-      # 6. ضغط الملف
-      # ──────────────────────────────────────────
       - name: Compress EPG output
-        run: |
-          gzip -k wg-data/guide.xml
-          echo "📦 Compressed: $(du -sh wg-data/guide.xml.gz | cut -f1)"
+        run: gzip -k wg-data/guide.xml
 
-      # ──────────────────────────────────────────
-      # 7. رفع EPG كـ Artifact قابل للتحميل
-      # ──────────────────────────────────────────
       - name: Upload EPG as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -124,25 +83,17 @@ jobs:
             wg-data/guide.xml.gz
           retention-days: 7
 
-      # ──────────────────────────────────────────
-      # 8. Commit & Push الـ EPG إلى المستودع
-      #    (حتى تقدر تستخدم raw URL مباشرة في IPTV)
-      # ──────────────────────────────────────────
       - name: Commit and push EPG
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           mkdir -p epg
           cp wg-data/guide.xml     epg/guide.xml
           cp wg-data/guide.xml.gz  epg/guide.xml.gz
-
           git add epg/guide.xml epg/guide.xml.gz
-
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "chore: update EPG [$(date -u '+%Y-%m-%d %H:%M UTC')]"
             git push
           fi
-          
