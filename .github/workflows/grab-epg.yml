@@ -14,149 +14,129 @@ jobs:
 
     steps:
       # ──────────────────────────────────────────
-      # 1. Checkout
+      # 1. Checkout المستودع
       # ──────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ──────────────────────────────────────────
-      # 2. إعداد المجلدات
+      # 2. إعداد Node.js
       # ──────────────────────────────────────────
-      - name: Prepare directories
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ──────────────────────────────────────────
+      # 3. Clone iptv-org/epg
+      # ──────────────────────────────────────────
+      - name: Clone iptv-org/epg
         run: |
-          mkdir -p wg-config/siteini.user/sites/programme-television.org
-          mkdir -p wg-data
-
-          cp config/programme-television_org_channels.xml \
-             wg-config/WebGrab++.config.xml
-
-          cp config/programme-television_org.ini \
-             wg-config/siteini.user/sites/programme-television.org/programme-television_org.ini
+          git clone --depth 1 -b master https://github.com/iptv-org/epg.git /tmp/epg
+          cd /tmp/epg && npm install
 
       # ──────────────────────────────────────────
-      # 3. Pull الـ image
+      # 4. التحقق أن programme-television.org موجود كـ site
       # ──────────────────────────────────────────
-      - name: Pull WebGrab+Plus image
-        run: docker pull lscr.io/linuxserver/webgrabplus:latest
-
-      # ──────────────────────────────────────────
-      # 4. بناء image معدّلة تتجاوز فحص الإنترنت
-      #    WebGrab++ يستخدم .NET Ping (ICMP raw socket)
-      #    المحظور في GitHub Actions.
-      #    الحل: نستخدم LD_PRELOAD أو نعدّل الـ hosts file
-      #    لجعل bing.com يجيب على الفحص.
-      # ──────────────────────────────────────────
-      - name: Build patched image
+      - name: Check site support
         run: |
-          cat > Dockerfile.wg << 'EOF'
-          FROM lscr.io/linuxserver/webgrabplus:latest
-          USER root
-
-          # نثبّت socat و iputils لمحاولة تفعيل ICMP
-          RUN apk add --no-cache socat iputils 2>/dev/null || \
-              (apt-get update -qq && apt-get install -y -qq socat iputils-ping) || true
-
-          # نضع script بديل لـ WebGrab++ يتجاوز فحص الإنترنت
-          # عبر تشغيله مع متغير بيئي يخبره أن الإنترنت متاح
-          EOF
-
-          docker build -f Dockerfile.wg -t wg-patched .
+          if ls /tmp/epg/sites/programme-television.org* 2>/dev/null; then
+            echo "✅ Site supported natively in iptv-org/epg"
+          else
+            echo "⚠️ Site not found — will use custom config"
+          fi
 
       # ──────────────────────────────────────────
-      # 5. تشغيل WebGrab++ مع cap_net_raw
-      #    --cap-add NET_RAW   → يسمح بـ ICMP raw socket
-      #    --cap-add NET_ADMIN → صلاحيات شبكة إضافية
-      #    --sysctl net.ipv4.ping_group_range → يسمح لأي مستخدم بالـ ping
+      # 5. إعداد channels.xml
+      #    إذا كان لديك ملف channels جاهز في المستودع — نستخدمه
+      #    وإلا نأخذه من iptv-org/epg مباشرةً
       # ──────────────────────────────────────────
-      - name: Run WebGrab+Plus
+      - name: Prepare channels file
         run: |
-          docker run -d \
-            --name=webgrabplus \
-            --cap-add NET_RAW \
-            --cap-add NET_ADMIN \
-            --sysctl net.ipv4.ping_group_range="0 2147483647" \
-            --dns 8.8.8.8 \
-            --dns 1.1.1.1 \
-            -e PUID=0 \
-            -e PGID=0 \
-            -e TZ=Europe/Paris \
-            -v "${{ github.workspace }}/wg-config:/config" \
-            -v "${{ github.workspace }}/wg-data:/data" \
-            wg-patched
+          mkdir -p /tmp/epg-output
 
-          echo "⏳ Waiting for initialization (45s)..."
-          sleep 45
-
-          # تحقق أن الـ container لا يزال يعمل
-          if ! docker ps --filter "name=webgrabplus" --filter "status=running" | grep -q webgrabplus; then
-            echo "⚠️ Container stopped early:"
-            docker logs webgrabplus
+          if [ -f "${{ github.workspace }}/config/channels.xml" ]; then
+            echo "📋 Using custom channels.xml from repo"
+            cp "${{ github.workspace }}/config/channels.xml" /tmp/epg/channels.xml
+          elif [ -f "/tmp/epg/sites/programme-television.org/programme-television.org.channels.xml" ]; then
+            echo "📋 Using iptv-org default channels.xml"
+            cp /tmp/epg/sites/programme-television.org/programme-television.org.channels.xml \
+               /tmp/epg/channels.xml
+          else
+            echo "❌ No channels file found!"
+            ls /tmp/epg/sites/ | grep -i programme || true
             exit 1
           fi
 
-          echo "🚀 Starting EPG grab..."
-          docker exec webgrabplus \
-            /app/dotnet/dotnet /app/wg++/bin.net/WebGrab+Plus.dll /config
-
-          echo "✅ Grab finished"
-
-          docker stop webgrabplus || true
-          docker rm  webgrabplus || true
+          echo "📺 Channels to grab:"
+          cat /tmp/epg/channels.xml
 
       # ──────────────────────────────────────────
-      # 6. التحقق من النتيجة
+      # 6. تشغيل الـ grabber
+      # ──────────────────────────────────────────
+      - name: Grab EPG
+        run: |
+          cd /tmp/epg
+
+          npm run grab -- \
+            --channels=channels.xml \
+            --output=/tmp/epg-output/guide.xml \
+            --days=7 \
+            --delay=1000 \
+            --timeout=30000 \
+            --maxConnections=5
+
+          echo "✅ Grab completed"
+
+      # ──────────────────────────────────────────
+      # 7. التحقق من النتيجة
       # ──────────────────────────────────────────
       - name: Check output
         run: |
-          echo "📂 wg-data:"
-          ls -la wg-data/
-
-          if [ -f "wg-config/WebGrab++.log.txt" ]; then
-            echo "📋 Last 60 lines of log:"
-            tail -60 wg-config/WebGrab++.log.txt
-          fi
-
-          if [ -f "wg-data/guide.xml" ]; then
-            echo "✅ EPG generated successfully"
-            wc -l wg-data/guide.xml
-            head -5 wg-data/guide.xml
+          if [ -f "/tmp/epg-output/guide.xml" ]; then
+            echo "✅ guide.xml generated:"
+            wc -l /tmp/epg-output/guide.xml
+            head -10 /tmp/epg-output/guide.xml
           else
             echo "❌ guide.xml not found!"
+            ls -la /tmp/epg-output/
             exit 1
           fi
 
       # ──────────────────────────────────────────
-      # 7. ضغط
+      # 8. ضغط الملف
       # ──────────────────────────────────────────
       - name: Compress EPG
         run: |
-          gzip -k wg-data/guide.xml
-          echo "📦 $(du -sh wg-data/guide.xml.gz | cut -f1)"
+          cp /tmp/epg-output/guide.xml /tmp/epg-output/guide.xml.bak
+          gzip -k /tmp/epg-output/guide.xml
+          echo "📦 Compressed: $(du -sh /tmp/epg-output/guide.xml.gz | cut -f1)"
 
       # ──────────────────────────────────────────
-      # 8. Upload artifact
+      # 9. Upload artifact
       # ──────────────────────────────────────────
       - name: Upload EPG artifact
         uses: actions/upload-artifact@v4
         with:
           name: epg-xmltv-${{ github.run_number }}
           path: |
-            wg-data/guide.xml
-            wg-data/guide.xml.gz
+            /tmp/epg-output/guide.xml
+            /tmp/epg-output/guide.xml.gz
           retention-days: 7
 
       # ──────────────────────────────────────────
-      # 9. Commit & Push
+      # 10. Commit & Push إلى المستودع
       # ──────────────────────────────────────────
       - name: Commit and push EPG
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          mkdir -p epg
-          cp wg-data/guide.xml    epg/guide.xml
-          cp wg-data/guide.xml.gz epg/guide.xml.gz
+          mkdir -p "${{ github.workspace }}/epg"
+          cp /tmp/epg-output/guide.xml    "${{ github.workspace }}/epg/guide.xml"
+          cp /tmp/epg-output/guide.xml.gz "${{ github.workspace }}/epg/guide.xml.gz"
 
+          cd "${{ github.workspace }}"
           git add epg/guide.xml epg/guide.xml.gz
 
           if git diff --staged --quiet; then
@@ -167,11 +147,16 @@ jobs:
           fi
 
       # ──────────────────────────────────────────
-      # 10. Logs عند الفشل
+      # 11. Debug عند الفشل
       # ──────────────────────────────────────────
       - name: Debug on failure
         if: failure()
         run: |
-          docker logs webgrabplus 2>/dev/null || true
-          cat wg-config/WebGrab++.log.txt 2>/dev/null || true
-          ls -la wg-data/ 2>/dev/null || true
+          echo "=== Sites available ==="
+          ls /tmp/epg/sites/ | grep -i programme || echo "none found"
+
+          echo "=== channels.xml ==="
+          cat /tmp/epg/channels.xml 2>/dev/null || true
+
+          echo "=== output dir ==="
+          ls -la /tmp/epg-output/ 2>/dev/null || true
