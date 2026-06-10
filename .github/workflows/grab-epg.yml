@@ -1,160 +1,32 @@
-name: Grab EPG - programme-television.org
+name: EPG Collector CI
 
 on:
   schedule:
-    # كل يوم الساعة 04:00 UTC (بعد منتصف الليل بتوقيت باريس)
-    - cron: '0 4 * * *'
-  workflow_dispatch:  # تشغيل يدوي عند الحاجة
-
-permissions:
-  contents: write  # مطلوب لـ git push
+    - cron: "0 2 * * *"  # تشغيل يومي الساعة 02:00 صباحاً
+  workflow_dispatch:
 
 jobs:
-  grab-epg:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
 
     steps:
-      # ──────────────────────────────────────────
-      # 1. Checkout المستودع
-      # ──────────────────────────────────────────
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-      # ──────────────────────────────────────────
-      # 2. التحقق من الإنترنت مع retry
-      # ──────────────────────────────────────────
-      - name: Wait for network connectivity
+      - name: Download EPG Collector
         run: |
-          echo "🌐 Checking internet connectivity..."
-          for i in {1..10}; do
-            if curl -fsSL --max-time 10 https://www.google.com > /dev/null 2>&1; then
-              echo "✅ Internet is available (attempt $i)"
-              break
-            fi
-            echo "⏳ Attempt $i failed, waiting 15 seconds..."
-            sleep 15
-            if [ $i -eq 10 ]; then
-              echo "❌ No internet after 10 attempts"
-              exit 1
-            fi
-          done
+          Invoke-WebRequest -Uri "https://sourceforge.net/projects/epgcollector/files/latest/download" -OutFile epgcollector.zip
+          Expand-Archive epgcollector.zip -DestinationPath epgcollector
 
-      # ──────────────────────────────────────────
-      # 3. إعداد مجلدات WebGrab+Plus
-      # ──────────────────────────────────────────
-      - name: Prepare WebGrab+Plus directories
+      - name: Run EPG Collector
         run: |
-          mkdir -p wg-config/siteini.user/sites/programme-television.org
-          mkdir -p wg-data
+          cd epgcollector
+          .\EPGCollector.exe ^
+            -ini ..\..\config\programme-television_org.ini ^
+            -channels ..\..\config\programme-television_org_channels.xml ^
+            -output ..\..\guide.xml
 
-          # ملف config الرئيسي
-          cp config/programme-television_org_channels.xml \
-             wg-config/WebGrab++.config.xml
-
-          # ملف الـ ini داخل siteini.user
-          cp config/programme-television_org.ini \
-             wg-config/siteini.user/sites/programme-television.org/programme-television_org.ini
-
-      # ──────────────────────────────────────────
-      # 4. Pull الـ image
-      # ──────────────────────────────────────────
-      - name: Pull WebGrab+Plus image
-        run: |
-          for i in {1..3}; do
-            docker pull lscr.io/linuxserver/webgrabplus:latest && break
-            echo "Pull attempt $i failed, retrying..."
-            sleep 10
-          done
-
-      # ──────────────────────────────────────────
-      # 5. تشغيل WebGrab+Plus - run مباشر (ليس daemon)
-      #    نستخدم --rm حتى يُحذف تلقائياً بعد الانتهاء
-      # ──────────────────────────────────────────
-      - name: Run WebGrab+Plus
-        timeout-minutes: 60
-        run: |
-          echo "🚀 Starting EPG grab..."
-
-          docker run --rm \
-            --name=webgrabplus \
-            --network host \
-            -e PUID=1000 \
-            -e PGID=1000 \
-            -e TZ=Europe/Paris \
-            -v "${{ github.workspace }}/wg-config:/config" \
-            -v "${{ github.workspace }}/wg-data:/data" \
-            lscr.io/linuxserver/webgrabplus:latest \
-            /bin/bash -c "
-              echo '⏳ Waiting for initialization...'
-              sleep 20
-              echo '▶ Running WebGrab++...'
-              /app/dotnet/dotnet /app/wg++/bin.net/WebGrab+Plus.dll /config
-              echo '✅ Done'
-            "
-
-      # ──────────────────────────────────────────
-      # 6. التحقق من النتيجة وعرض اللوغ
-      # ──────────────────────────────────────────
-      - name: Check output
-        run: |
-          echo "📂 Contents of wg-data:"
-          ls -la wg-data/ || echo "(empty)"
-
-          echo "📂 Contents of wg-config:"
-          ls -la wg-config/
-
-          if [ -f "wg-config/WebGrab++.log.txt" ]; then
-            echo "📋 Last 50 lines of WebGrab++.log.txt:"
-            tail -50 wg-config/WebGrab++.log.txt
-          fi
-
-          if [ -f "wg-data/guide.xml" ]; then
-            echo "✅ EPG generated successfully"
-            wc -l wg-data/guide.xml
-            head -5 wg-data/guide.xml
-          else
-            echo "❌ guide.xml not found!"
-            exit 1
-          fi
-
-      # ──────────────────────────────────────────
-      # 7. ضغط الملف
-      # ──────────────────────────────────────────
-      - name: Compress EPG output
-        run: |
-          gzip -k wg-data/guide.xml
-          echo "📦 Compressed: $(du -sh wg-data/guide.xml.gz | cut -f1)"
-
-      # ──────────────────────────────────────────
-      # 8. رفع EPG كـ Artifact قابل للتحميل
-      # ──────────────────────────────────────────
-      - name: Upload EPG as artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Output
+        uses: actions/upload-artifact@v3
         with:
-          name: epg-xmltv-${{ github.run_number }}
-          path: |
-            wg-data/guide.xml
-            wg-data/guide.xml.gz
-          retention-days: 7
-
-      # ──────────────────────────────────────────
-      # 9. Commit & Push الـ EPG إلى المستودع
-      # ──────────────────────────────────────────
-      - name: Commit and push EPG
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          mkdir -p epg
-          cp wg-data/guide.xml     epg/guide.xml
-          cp wg-data/guide.xml.gz  epg/guide.xml.gz
-
-          git add epg/guide.xml epg/guide.xml.gz
-
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "chore: update EPG [$(date -u '+%Y-%m-%d %H:%M UTC')]"
-            git push
-          fi
-          
+          name: epg_xml
+          path: guide.xml
