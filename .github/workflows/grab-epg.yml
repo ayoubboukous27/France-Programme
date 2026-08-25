@@ -1,167 +1,46 @@
-name: Grab EPG - programme-television.org
+name: Update pickx.be EPG
 
 on:
   schedule:
-    - cron: '0 4 * * *'
-  workflow_dispatch:
+    # تشغيل يومي الساعة 04:00 UTC — عدّل حسب الحاجة
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
-jobs:
-  grab-epg:
-    runs-on: ubuntu-latest
+concurrency:
+  group: update-pickx-epg
+  cancel-in-progress: true
 
+jobs:
+  update-epg:
+    runs-on: ubuntu-latest
     steps:
-      # ──────────────────────────────────────────
-      # 1. Checkout
-      # ──────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ──────────────────────────────────────────
-      # 2. تثبيت .NET runtime
-      # ──────────────────────────────────────────
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          dotnet-version: '9.0.x'
+          node-version: "20"
 
-      # ──────────────────────────────────────────
-      # 3. منح صلاحية ping للـ runner مباشرةً
-      #    (بدون Docker — على الـ runner نفسه)
-      #    sysctl يسمح لأي process بـ ICMP
-      # ──────────────────────────────────────────
-      - name: Enable ICMP ping for all users
-        run: |
-          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
-          echo "✅ ping_group_range set"
-          # تأكيد أن الإنترنت يعمل من الـ runner
-          ping -c 2 8.8.8.8 && echo "✅ Ping works" || echo "⚠️ Ping still blocked (Azure level)"
-          curl -s --max-time 5 https://bing.com -o /dev/null && echo "✅ HTTP works"
-
-      # ──────────────────────────────────────────
-      # 4. تنزيل WebGrab+Plus مباشرةً (بدون Docker)
-      # ──────────────────────────────────────────
-      - name: Download WebGrab+Plus
-        run: |
-          mkdir -p /opt/wgplus
-          # تنزيل آخر إصدار من الموقع الرسمي
-          WG_URL="https://github.com/rhaamo/WebGrabPlus-Binaries/releases/latest/download/WebGrabPlus-linux.zip"
-          # نجرب أولاً من الـ linuxserver image بطريقة extract مباشرة
-          docker create --name wg_extract lscr.io/linuxserver/webgrabplus:latest
-          docker cp wg_extract:/app/wg++ /opt/wgplus/
-          docker cp wg_extract:/app/dotnet /opt/dotnet-wg/
-          docker rm wg_extract
-          echo "✅ WebGrab++ extracted"
-          ls /opt/wgplus/
-
-      # ──────────────────────────────────────────
-      # 5. إعداد ملفات الـ config
-      # ──────────────────────────────────────────
-      - name: Prepare config
-        run: |
-          mkdir -p /tmp/wg-config/siteini.user/sites/programme-television.org
-          mkdir -p /tmp/wg-data
-
-          cp config/programme-television_org_channels.xml \
-             /tmp/wg-config/WebGrab++.config.xml
-
-          cp config/programme-television_org.ini \
-             /tmp/wg-config/siteini.user/sites/programme-television.org/programme-television_org.ini
-
-      # ──────────────────────────────────────────
-      # 6. تشغيل WebGrab++ مباشرةً على الـ runner
-      #    (بدون Docker — الـ runner عنده ping مفعّل)
-      # ──────────────────────────────────────────
-      - name: Run WebGrab++
-        run: |
-          export DOTNET_ROOT=/opt/dotnet-wg
-          export PATH=$DOTNET_ROOT:$PATH
-
-          echo "🚀 Starting EPG grab..."
-          /opt/dotnet-wg/dotnet /opt/wgplus/bin.net/WebGrab+Plus.dll /tmp/wg-config
-
-          echo "✅ Grab finished"
-
-      # ──────────────────────────────────────────
-      # 7. التحقق من النتيجة
-      # ──────────────────────────────────────────
-      - name: Check output
-        run: |
-          echo "📂 wg-data:"
-          ls -la /tmp/wg-data/
-
-          if [ -f "/tmp/wg-config/WebGrab++.log.txt" ]; then
-            echo "📋 Last 60 lines:"
-            tail -60 /tmp/wg-config/WebGrab++.log.txt
-          fi
-
-          if [ -f "/tmp/wg-data/guide.xml" ]; then
-            echo "✅ EPG generated!"
-            wc -l /tmp/wg-data/guide.xml
-            head -5 /tmp/wg-data/guide.xml
-          else
-            # ربما WebGrab++ يكتب في /config بدل /data
-            find /tmp/wg-config -name "*.xml" -not -name "WebGrab++.config.xml" 2>/dev/null || true
-            echo "❌ guide.xml not found!"
-            exit 1
-          fi
-
-      # ──────────────────────────────────────────
-      # 8. ضغط
-      # ──────────────────────────────────────────
-      - name: Compress EPG
-        run: |
-          # تحديد مكان الملف (data أو config)
-          if [ -f "/tmp/wg-data/guide.xml" ]; then
-            EPG_FILE="/tmp/wg-data/guide.xml"
-          else
-            EPG_FILE=$(find /tmp/wg-config -name "guide.xml" | head -1)
-          fi
-          gzip -k "$EPG_FILE"
-          echo "📦 $(du -sh ${EPG_FILE}.gz)"
-          echo "EPG_FILE=$EPG_FILE" >> $GITHUB_ENV
-
-      # ──────────────────────────────────────────
-      # 9. Upload artifact
-      # ──────────────────────────────────────────
-      - name: Upload EPG artifact
-        uses: actions/upload-artifact@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          name: epg-xmltv-${{ github.run_number }}
-          path: |
-            ${{ env.EPG_FILE }}
-            ${{ env.EPG_FILE }}.gz
-          retention-days: 7
+          python-version: "3.12"
 
-      # ──────────────────────────────────────────
-      # 10. Commit & Push
-      # ──────────────────────────────────────────
-      - name: Commit and push EPG
+      - name: Grab pickx.be EPG
+        run: python3 grab_pickx_epg.py --output epg/pickx.be.xml
+
+      - name: Commit and push if changed
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          mkdir -p epg
-          cp "${{ env.EPG_FILE }}"      epg/guide.xml
-          cp "${{ env.EPG_FILE }}.gz"   epg/guide.xml.gz
-
-          git add epg/guide.xml epg/guide.xml.gz
-
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
+          git add epg/pickx.be.xml
+          if git diff --cached --quiet; then
+            echo "Aucun changement dans le guide EPG."
           else
-            git commit -m "chore: update EPG [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git commit -m "chore: update pickx.be EPG [skip ci]"
             git push
           fi
-
-      # ──────────────────────────────────────────
-      # 11. Debug عند الفشل
-      # ──────────────────────────────────────────
-      - name: Debug on failure
-        if: failure()
-        run: |
-          cat /tmp/wg-config/WebGrab++.log.txt 2>/dev/null || true
-          find /tmp/wg-config /tmp/wg-data -name "*.xml" 2>/dev/null || true
-          ls -la /opt/wgplus/ 2>/dev/null || true
