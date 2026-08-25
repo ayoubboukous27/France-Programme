@@ -12,7 +12,7 @@ Ce script :
   1. Clone (ou met à jour) un checkout shallow de iptv-org/epg dans un
      dossier de travail.
   2. Installe les dépendances npm (une seule fois).
-  3. Lance `npm run grab -- --site=pickx.be [--lang=xx] [--days=N]`.
+  3. Lance `npm run grab -- --sites=pickx.be [--lang=xx] [--days=N]`.
   4. Copie le guide.xml généré vers le chemin de sortie demandé.
 
 Utilisation :
