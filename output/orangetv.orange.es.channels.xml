@@ -15,10 +15,6 @@
   <channel site="orangetv.orange.es" site_id="2209" lang="es" xmltv_id="">MMA TV</channel>
   <channel site="orangetv.orange.es" site_id="11031" lang="es" xmltv_id="">GOL</channel>
   <channel site="orangetv.orange.es" site_id="11036" lang="es" xmltv_id="">M Liga de Campeones 9</channel>
-  <channel site="orangetv.orange.es" site_id="11065" lang="es" xmltv_id="">M Liga de Campeones 14</channel>
-  <channel site="orangetv.orange.es" site_id="11066" lang="es" xmltv_id="">M Liga de Campeones 15</channel>
-  <channel site="orangetv.orange.es" site_id="11067" lang="es" xmltv_id="">M Liga de Campeones 16</channel>
-  <channel site="orangetv.orange.es" site_id="11068" lang="es" xmltv_id="">M Liga de Campeones 17</channel>
   <channel site="orangetv.orange.es" site_id="11097" lang="es" xmltv_id="">RunTime Clásico</channel>
   <channel site="orangetv.orange.es" site_id="11102" lang="es" xmltv_id="">Vivir con gatos</channel>
   <channel site="orangetv.orange.es" site_id="11103" lang="es" xmltv_id="">Vivir con perros</channel>
@@ -30,8 +26,6 @@
   <channel site="orangetv.orange.es" site_id="11154" lang="es" xmltv_id="">Historia y Vida</channel>
   <channel site="orangetv.orange.es" site_id="11156" lang="es" xmltv_id="">Love Wine</channel>
   <channel site="orangetv.orange.es" site_id="11157" lang="es" xmltv_id="">Love the Planet</channel>
-  <channel site="orangetv.orange.es" site_id="11158" lang="es" xmltv_id="">M Liga de Campeones 18</channel>
-  <channel site="orangetv.orange.es" site_id="11159" lang="es" xmltv_id="">M Liga de Campeones 19</channel>
   <channel site="orangetv.orange.es" site_id="11160" lang="es" xmltv_id="">Fútbol 1</channel>
   <channel site="orangetv.orange.es" site_id="11166" lang="es" xmltv_id="">Pruebas LL1</channel>
   <channel site="orangetv.orange.es" site_id="11167" lang="es" xmltv_id="">Pruebas LL2</channel>
